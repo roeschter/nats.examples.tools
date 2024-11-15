@@ -224,10 +224,13 @@ public class StreamBackedSubscriber implements MessageHandler{
 				synchronized ( this ) {
 					firstPendingMsg = messages.peek();
 				}
-				String pendingID = getFromHeader(firstPendingMsg, NATSMSGID);
-				String incomingID = getFromHeader(msg, NATSMSGID);
+				//String pendingID = getFromHeader(firstPendingMsg, NATSMSGID);
+				//String incomingID = getFromHeader(msg, NATSMSGID);
+				long pendingID = getID( firstPendingMsg );
+				long incomingID = getID( msg );
 				//Check if we did catch up
-				if ( pendingID.equals(incomingID)) {
+				//if ( pendingID.equals(incomingID)) {
+				if ( pendingID == incomingID) {
 					cont = false;
 				} else {
 					//Deliver incoming message
