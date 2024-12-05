@@ -122,6 +122,9 @@ public class StreamBackedSubscriber implements MessageHandler{
 	}
 
 	public static long getID( Message msg  ) {
+		if ( msg == null )
+			return -1;
+
 		if ( msg.isJetStream())
 			return msg.metaData().streamSequence();
 		else
