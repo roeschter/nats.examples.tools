@@ -21,11 +21,7 @@ import io.nats.client.impl.Headers;
 /*
  * https://docs.nats.io/nats-concepts/jetstream/headers
  *
- * Todo:
- *
- * - Isolate MessageHandler in inner class
- * - Better exception handling?
- *
+
  */
 
 
@@ -71,6 +67,13 @@ public class StreamBackedSubscriber implements MessageHandler{
 			System.out.println(s);
 	}
 
+	public void chaosTest( boolean test )
+	{
+		if ( test)
+			rnd = new Random();
+		chaosTest = test;
+	}
+
 	public StreamBackedSubscriber( StreamContext streamContext, Connection connection, String subject, String repubPrefix,  MessageHandler handler ) {
 		//this.jetstream = jetstream;
 		this.connection = connection;
@@ -94,13 +97,6 @@ public class StreamBackedSubscriber implements MessageHandler{
 			}
 		}
 
-	}
-
-	public void chaosTest( boolean test )
-	{
-		if ( test)
-			rnd = new Random();
-		chaosTest = test;
 	}
 
 	private void stopOrderedConsumer() {
@@ -136,7 +132,7 @@ public class StreamBackedSubscriber implements MessageHandler{
 		if ( msg == null ) return "";
 
 		Headers headers = msg.getHeaders();
-		if ( headers == null ) return "";
+		if ( headers == null ) return _default;
 
 		String id = headers.getFirst(name);
 
