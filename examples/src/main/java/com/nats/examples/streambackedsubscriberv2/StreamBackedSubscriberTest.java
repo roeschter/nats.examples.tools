@@ -1,9 +1,10 @@
-package com.nats.examples.streambackedsubscriber2;
+	package com.nats.examples.streambackedsubscriberv2;
 
 
 import java.io.IOException;
 import java.time.ZonedDateTime;
 import io.nats.client.Connection;
+import io.nats.client.Dispatcher;
 import io.nats.client.JetStream;
 import io.nats.client.Nats;
 import io.nats.client.Options;
@@ -20,9 +21,6 @@ public static String[] SERVER = new String[] { "nats://localhost:4222" };
 
 	static final String STREAM = "stream_backed_subscriber";
 
-	static long lastSeq = 0;
-	static long deviceSeq = 0;
-
 	public static long extractDeviceSeq( String s ) {
 		int pos = s.lastIndexOf('.');
 		return Integer.parseInt(s.substring(pos+1));
@@ -30,10 +28,13 @@ public static String[] SERVER = new String[] { "nats://localhost:4222" };
 
 	public static class Handler implements MessageHandler {
 
+		long lastSeq = 0;
+		long deviceSeq = 0;
+
 		@Override
 		public void onMessage(Message msg) throws InterruptedException {
-			String msgID = StreamBackedSubscriber2.getFromHeader(msg, StreamBackedSubscriber2.NATSMSGID);
-			lastSeq = StreamBackedSubscriber2.getID(msg);
+			String msgID = StreamBackedSubscriber.getFromHeader(msg, StreamBackedSubscriber.NATSMSGID);
+			lastSeq = StreamBackedSubscriber.getID(msg);
 			System.out.println( "Received: "
 					+  msgID + " : "
 					+ lastSeq );
@@ -49,6 +50,8 @@ public static String[] SERVER = new String[] { "nats://localhost:4222" };
 
 	}
 
+	public static int CATCHUP = 0;
+
 	public static void main(String[] args) throws Exception {
 
 		Options options = Options.builder().servers(SERVER).build();
@@ -57,25 +60,29 @@ public static String[] SERVER = new String[] { "nats://localhost:4222" };
 	            JetStream js = nc.jetStream();
 	            StreamContext ctx = js.getStreamContext(STREAM);
 
-	            StreamBackedSubscriber2 listener = new StreamBackedSubscriber2( ctx, nc.createDispatcher(null), "ingest.devices.0", "repub", new Handler());
-	            ZonedDateTime time = ZonedDateTime.now().minusSeconds(10);
-	            //listener.start(null);
-
-	            //System.out.println( "********* Waiting a moment for manual intervention" );
-	            //Thread.sleep(5000);
+	            Dispatcher dispatcher = nc.createDispatcher(null);
+	            StreamBackedSubscriber listener = new StreamBackedSubscriber( ctx, dispatcher, "ingest.devices.0", "repub.devices.0", new Handler());
+	            listener.setTrace(true);
+	            ZonedDateTime time = ZonedDateTime.now().minusSeconds(CATCHUP);
 
 	            System.out.println( "********* Starting with 10s window" );
 	            listener.start(time);
-	            Thread.sleep(3000);
+	            Thread.sleep(5000);
 	            System.out.println( "********* Stopping" );
 	            listener.stop();
-	            Thread.sleep(3000);
+	            nc.closeDispatcher(dispatcher);
+
+	            Thread.sleep(1000);
 
 
-	            listener = new StreamBackedSubscriber2( ctx, nc.createDispatcher(null), "ingest.devices.0", "repub", new Handler());
+	            listener = new StreamBackedSubscriber( ctx, nc.createDispatcher(null), "ingest.devices.0", "repub.devices.0", new Handler());
 	            System.out.println( "********* Chaostest dropping messages" );
 	            listener.chaosTest(true);
-	            Thread.sleep(10000);
+	            listener.setTrace(true);
+	            listener.start(time);
+
+	            Thread.sleep(20000);
+
 	            listener.stop();
 
 	            //listener.restart(lastSeq-5);

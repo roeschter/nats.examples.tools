@@ -1,4 +1,4 @@
-package com.nats.examples.streambackedsubscriber2;
+package com.nats.examples.streambackedsubscriberv2;
 
 import java.io.IOException;
 import java.util.Iterator;
@@ -15,6 +15,7 @@ import io.nats.client.MessageConsumer;
 import io.nats.client.MessageHandler;
 import io.nats.client.OrderedConsumerContext;
 import io.nats.client.StreamContext;
+import io.nats.client.Subscription;
 import io.nats.client.api.DeliverPolicy;
 import io.nats.client.api.OrderedConsumerConfiguration;
 import io.nats.client.impl.Headers;
@@ -22,25 +23,12 @@ import io.nats.client.impl.Headers;
 /*
  * https://docs.nats.io/nats-concepts/jetstream/headers
  *
- * * Todo:
- *   - Copy class and simplify
- *      - remove pause and restart
- *      - Pass in a Dispatcher from the outside
- *      - OrderedConsumer also dlivers to Dispatcher
- *      - silently ignore old sequences
- *      - On catchup
- *          - destroy OrderedConsumer
- *      	- deliver synchronously from handler
- *      - Detect gaps when in SUBSCRIBING
- *          - Start OrderedConsumer
- *      - STATUS
- *      	- RECOVERING
- *          - SUBSCRIBING
- *	        - STOPPED
+ * Global Backgroudnd thread detecting idle subscribers and closing OrderedConsumers
+ *
  */
 
 
-public class StreamBackedSubscriber2 implements MessageHandler{
+public class StreamBackedSubscriber implements MessageHandler{
 
 	//Connection connection;
 	String subject;
@@ -49,12 +37,14 @@ public class StreamBackedSubscriber2 implements MessageHandler{
 	MessageHandler handler;
 	Dispatcher dispatcher;
 
-	long recoverTimeout = 1000;  //ms to wait for messages before concluding that we have reach the end of the stream
+	//Not implemented - Would need a global background thread to detect subscriptions, which never received any data.
+	//long recoverTimeout = 1000;  //ms to wait for messages before concluding that we have reach the end of the stream
 
 	MessageConsumer consumer;
+	Subscription subscription;
 	LinkedList<Message> messages = new LinkedList<Message>();
 
-	private java.time.ZonedDateTime startTime;
+	//private java.time.ZonedDateTime startTime;
 	private long lastDispatchedSequence= 0;  //
 
 	public static String NATSMSGID = "Nats-Msg-Id";
@@ -75,7 +65,12 @@ public class StreamBackedSubscriber2 implements MessageHandler{
 
 	private void trace(String s) {
 		if ( trace )
-			System.out.println(s);
+			System.out.println( subject + ": " + s);
+	}
+
+	public void setTrace( boolean t)
+	{
+		trace = t;
 	}
 
 	public void chaosTest( boolean test )
@@ -85,21 +80,14 @@ public class StreamBackedSubscriber2 implements MessageHandler{
 		chaosTest = test;
 	}
 
-	public StreamBackedSubscriber2( StreamContext streamContext, Dispatcher dispatcher, String subject, String repubPrefix,  MessageHandler handler ) {
+	public StreamBackedSubscriber( StreamContext streamContext, Dispatcher dispatcher, String subject, String repubSubject,  MessageHandler handler ) {
 		status = STATUS_READY;
 		this.dispatcher = dispatcher;
 		this.subject = subject;
 		this.handler = handler;
 		this.streamContext = streamContext;
-		repubSubject = repubPrefix+"."+subject;
+		this.repubSubject = repubSubject;
 	}
-
-	private void stopOrderedConsumer() {
-		if ( consumer != null) {
-			consumer.stop();
-		}
-	}
-
 
 	public static long getFromHeaderLong( Message msg, String name ) {
 		String val = getFromHeader(msg, name, "0");
@@ -154,7 +142,36 @@ public class StreamBackedSubscriber2 implements MessageHandler{
 			ocConfig = ocConfig.deliverPolicy( DeliverPolicy.All );
 		}
 		OrderedConsumerContext oc = streamContext.createOrderedConsumer( ocConfig );
-		consumer = oc.consume(dispatcher, this);
+
+		int retryCount = 0;
+		int retryMax = 5;
+		do {
+			if ( retryCount != 0) {
+				try {
+					Thread.sleep(1000);
+				} catch (InterruptedException e) {
+					// TODO Auto-generated catch block
+					e.printStackTrace();
+				}
+			}
+			try {
+				consumer = oc.consume(dispatcher, this);
+			} catch ( Exception e ) {
+				e.printStackTrace();
+			}
+			retryCount++;
+		} while (consumer == null && retryCount < retryMax);
+	}
+
+	private void stopOrderedConsumer() {
+		if ( consumer != null) {
+			try {
+				consumer.close();
+			} catch (Exception e) {
+				// TODO Auto-generated catch block
+				e.printStackTrace();
+			}
+		}
 	}
 
 
@@ -172,93 +189,110 @@ public class StreamBackedSubscriber2 implements MessageHandler{
 
 	@Override
 	public void onMessage(Message msg) throws InterruptedException {
-		long currentSeq = getID( msg );
+		try {
 
-		trace( "OnMessage: " + currentSeq);
+			long currentSeq = getID( msg );
 
-		if ( !msg.isJetStream() && chaosTest) {
-			if (rnd.nextInt(4) == 0 ) {
-				trace( "**************Dropping message " + currentSeq);
-				return;
-			}
-		}
+			trace( "OnMessage: " + currentSeq);
 
-		if ( status == STATUS_STOPPED ) {
-			trace("Stopped - discarding : " + currentSeq );
-			return;
-		}
-
-		Message pendingMsg = null;
-
-		if ( msg.isJetStream()) {
-			if ( status == STATUS_SUBSCRIBING ) {
-				//Something went wrong
-				stopOrderedConsumer(); //Stop again
-				return;
-			}
-
-			//Check if we did catch up
-			pendingMsg = messages.peek();
-			long pendingID = getID( pendingMsg );
-
-			// >= because messages MAY have disappeared from the stream, but we have to continue anyway
-			if ( pendingMsg != null && currentSeq >= pendingID  ) {
-				trace("Catch up - discarding : " + currentSeq );
-				stopOrderedConsumer();
-				//There no gaps by definition when we are recovering
-				//Even if messages in the stream were incomplete we must reset
-				lastDispatchedSequence = 0;
-				msg = null; //Discard
-				status = STATUS_SUBSCRIBING;
-				//Dispatch all pending
-				pendingMsg = messages.poll();
-			} else {
-				//Dispatch incoming
-				pendingMsg = msg;
-			}
-		} else {
-			//Buffer if we are still recovering
-			if ( status == STATUS_RECOVERING ) {
-				trace("Buffering: " + currentSeq);
-				messages.addLast(msg);
-				return;
-			} else {
-				//Dispatch
-				pendingMsg = msg;
-			}
-		}
-
-		while ( pendingMsg != null )
-		{
-			//Check for gaps
-			if ( !msg.isJetStream() ) {
-				long lastExpectedSeq = getFromHeaderLong( msg, NATSLASTSEQUENCE);
-				if ( lastDispatchedSequence != 0 && lastDispatchedSequence != lastExpectedSeq ) {
-					//We have a gap - so restart after last dispatched
-					trace("Gap - Expected: " +  lastDispatchedSequence + " got: " + lastExpectedSeq );
-					trace("Gap - Starting recovery from: " + (lastDispatchedSequence+1) );
-					messages.addFirst(pendingMsg);  //Put it back
-					try {
-						startOrderedConsumer(startTime, lastDispatchedSequence+1 );
-						status = STATUS_RECOVERING; //Only when successful
-						return;
-					} catch (IOException | JetStreamApiException e) {
-						//We MAY want to retry
-						e.printStackTrace();
-					}
+			//Test code
+			if ( !msg.isJetStream() && chaosTest) {
+				if (rnd.nextInt(4) == 0 ) {
+					trace( "**************Dropping message " + currentSeq);
+					return;
 				}
 			}
-			currentSeq = getID( msg );
-			//Finnally check for duplciates
-			if ( currentSeq <= lastDispatchedSequence  ) {
-				trace("Duplicate - discarding : " + currentSeq );
-			} else {
-				dispatch(pendingMsg,  currentSeq);
-				lastDispatchedSequence = currentSeq;
+			//End Test code
+
+			//Safeguard against race condition
+			if ( status == STATUS_STOPPED ) {
+				trace("Stopped - discarding : " + currentSeq );
+				return;
 			}
-			pendingMsg = null;
-			if ( status == STATUS_SUBSCRIBING ) //All messages in the queue must go out
-				pendingMsg = messages.poll();
+
+			Message pendingMsg = null;
+
+			if ( msg.isJetStream()) {
+				//Safeguard against race condition
+				if ( status == STATUS_SUBSCRIBING ) {
+					//Something went wrong
+					stopOrderedConsumer(); //Stop again
+					return;
+				}
+
+				//Check if we did catch up
+				Message peek = messages.peek();
+				long pendingID = getID( peek );
+
+				// >= because messages MAY have disappeared from the stream, but we have to continue anyway
+				if ( peek != null && currentSeq >= pendingID  ) {
+					trace("Catch up - discarding : " + currentSeq );
+					stopOrderedConsumer();
+					status = STATUS_SUBSCRIBING;
+					trace("Status: " + status);
+					msg = null; //Discard incoming
+					//Dispatch all pending
+					pendingMsg = messages.poll();
+				} else {
+					//Otherwise dispatch incoming
+					pendingMsg = msg;
+				}
+			//Not Jetstream so its from the repub
+			} else {
+				//Always add to the buffer
+				messages.addLast(msg);
+
+				if ( status == STATUS_RECOVERING ) {
+					//Buffer if we are still recovering. Just return.
+					trace("Buffering: " + currentSeq);
+					return;
+				} else {
+					//Dispatch the first in the buffer
+					pendingMsg = messages.poll();;
+				}
+			}
+
+			while ( pendingMsg != null )
+			{
+				currentSeq = getID( pendingMsg );
+				trace("lastDispatchedSequence: " + lastDispatchedSequence );
+				//Check for duplicates, we may have buffered old messages
+				if ( currentSeq <= lastDispatchedSequence  ) {
+					trace("Duplicate - discarding : " + currentSeq );
+				} else {
+					//Next check for gaps if we are delivering from repub
+					if ( !pendingMsg.isJetStream() ) {
+						long lastExpectedSeq = getFromHeaderLong( pendingMsg, NATSLASTSEQUENCE);
+						if ( lastDispatchedSequence != 0 && lastDispatchedSequence != lastExpectedSeq ) {
+							//We have a gap - so restart after last dispatched
+							trace("Subscriber Gap - Expected: " +  lastDispatchedSequence + " got: " + lastExpectedSeq );
+							trace("Subscriber Gap - Starting recovery from: " + (lastDispatchedSequence+1) );
+							messages.addFirst(pendingMsg);  //Put it back
+							pendingMsg = null;
+							try {
+								startOrderedConsumer(null, lastDispatchedSequence+1 );
+								status = STATUS_RECOVERING; //Only when successful
+								trace("Status: " + status);
+								return;
+							} catch (IOException | JetStreamApiException e) {
+								//We will stay in while loop and try again
+								e.printStackTrace();
+							}
+						}
+					}
+
+					//Now we are ready to dispatch
+					lastDispatchedSequence = currentSeq;
+					dispatch(pendingMsg,  currentSeq);
+				}
+
+				pendingMsg = null;
+				if ( status == STATUS_SUBSCRIBING ) //All messages in the queue must go out
+					pendingMsg = messages.poll();
+			}
+		} catch (Exception e) {
+			e.printStackTrace();
+			throw new RuntimeException(e);
 		}
 
 	}
@@ -267,12 +301,16 @@ public class StreamBackedSubscriber2 implements MessageHandler{
 
 	private void startSubscriber() {
 		trace( "Subscribing: " + repubSubject);
-		dispatcher.subscribe(repubSubject, this);
+		subscription = dispatcher.subscribe(repubSubject, this);
 	}
 
 	private void stopSubscriber() {
-		trace( "Unsubscribing: " + repubSubject);
-		dispatcher.unsubscribe(repubSubject);
+		if ( subscription != null)
+		{
+			trace( "Unsubscribing: " + repubSubject);
+			dispatcher.unsubscribe(subscription, 0);
+
+		}
 	}
 
 	synchronized private void clearList() {
@@ -288,12 +326,13 @@ public class StreamBackedSubscriber2 implements MessageHandler{
 		if ( !status.equals(STATUS_READY ))
 			new IllegalStateException("Already started");
 
-		this.startTime = startTime;
+		trace( "Starting");
+		startOrderedConsumer(startTime, startSequence );
 		status = STATUS_RECOVERING;
 		startSubscriber();
 		if (chaosTest )
 			Thread.sleep(rnd.nextInt(3000));
-		startOrderedConsumer(startTime, startSequence );
+
 	}
 
 	synchronized public void stop() {
@@ -303,6 +342,8 @@ public class StreamBackedSubscriber2 implements MessageHandler{
 
 		if ( status.equals(STATUS_READY ) )
 			new IllegalStateException("Not yet started");
+
+		trace( "Stopping");
 
 		stopSubscriber();
 		stopOrderedConsumer();

@@ -1,4 +1,4 @@
-package com.nats.examples.streambackedsubscriber2;
+package com.nats.examples.streambackedsubscriberv1;
 
 
 import java.io.IOException;
@@ -14,7 +14,7 @@ import io.nats.client.MessageHandler;
 /*
  */
 
-public class StreamBackedSubscriberExample {
+public class StreamBackedSubscriberTest {
 
 public static String[] SERVER = new String[] { "nats://localhost:4222" };
 
@@ -32,8 +32,8 @@ public static String[] SERVER = new String[] { "nats://localhost:4222" };
 
 		@Override
 		public void onMessage(Message msg) throws InterruptedException {
-			String msgID = StreamBackedSubscriber2.getFromHeader(msg, StreamBackedSubscriber2.NATSMSGID);
-			lastSeq = StreamBackedSubscriber2.getID(msg);
+			String msgID = StreamBackedSubscriber.getFromHeader(msg, StreamBackedSubscriber.NATSMSGID);
+			lastSeq = StreamBackedSubscriber.getID(msg);
 			System.out.println( "Received: "
 					+  msgID + " : "
 					+ lastSeq );
@@ -57,19 +57,34 @@ public static String[] SERVER = new String[] { "nats://localhost:4222" };
 	            JetStream js = nc.jetStream();
 	            StreamContext ctx = js.getStreamContext(STREAM);
 
-
-	            StreamBackedSubscriber2 listener = new StreamBackedSubscriber2( ctx, nc.createDispatcher(), "ingest.devices.0", "repub", new Handler());
+	            StreamBackedSubscriber listener = new StreamBackedSubscriber( ctx, nc, "ingest.devices.0", "repub", new Handler());
 	            ZonedDateTime time = ZonedDateTime.now().minusSeconds(10);
+	            //listener.start(null);
+
+	            //System.out.println( "********* Waiting a moment for manual intervention" );
+	            //Thread.sleep(5000);
 
 	            System.out.println( "********* Starting with 10s window" );
 	            listener.start(time);
-
-	            //Run for 30 seconds
-	            Thread.sleep(20000);
+	            Thread.sleep(3000);
+	            System.out.println( "********* Stopping" );
+	            listener.stop();
+	            Thread.sleep(3000);
+	            System.out.println( "********* Restart where we left off" );
+	            listener.restart();
+	            Thread.sleep(3000);
 
 	            System.out.println( "********* Stopping" );
 	            listener.stop();
+	            System.out.println( "********* Chaostest dropping messages" );
+	            listener.chaosTest(true);
+	            Thread.sleep(3000);
+	            System.out.println( "********* Restart where we left off" );
+	            listener.restart();
 
+	            //listener.restart(lastSeq-5);
+
+	            Thread.sleep(1000000000);
 
 		 } catch ( /*JetStreamApiException |*/ IOException | InterruptedException ioe) {
 			 	ioe.printStackTrace();

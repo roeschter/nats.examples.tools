@@ -1,4 +1,4 @@
-package com.nats.examples.streambackedsubscriber;
+package com.nats.examples.streambackedsubscriberv1;
 
 
 import java.io.IOException;

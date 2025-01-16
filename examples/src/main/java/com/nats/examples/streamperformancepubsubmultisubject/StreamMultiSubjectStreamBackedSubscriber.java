@@ -2,8 +2,10 @@ package com.nats.examples.streamperformancepubsubmultisubject;
 
 import java.io.IOException;
 import java.time.ZonedDateTime;
+import java.util.ArrayList;
 
-import com.nats.examples.streambackedsubscriberv1.StreamBackedSubscriber;
+import com.nats.examples.streambackedsubscriberv2.StreamBackedSubscriber;
+import com.nats.examples.streambackedsubscriberv2.StreamBackedSubscriberTest.Handler;
 
 import io.nats.client.Connection;
 import io.nats.client.Dispatcher;
@@ -16,24 +18,18 @@ import io.nats.client.Nats;
 import io.nats.client.Options;
 import io.nats.client.OrderedConsumerContext;
 import io.nats.client.StreamContext;
-import io.nats.client.api.DeliverPolicy;
-import io.nats.client.api.OrderedConsumerConfiguration;
-import io.nats.client.api.Republish;
-import io.nats.client.api.StorageType;
-import io.nats.client.api.StreamConfiguration;
-import io.nats.client.api.StreamInfo;
 import io.nats.client.impl.Headers;
 import io.nats.client.impl.NatsMessage;
 
-public class StreamMultiSubjectOrderedConsumer {
+public class StreamMultiSubjectStreamBackedSubscriber {
 	public static String[] SERVER = new String[] { "nats://localhost:4222" };
 
 	private static String STREAM = "stream-1";
 	private static String SUBJECTPREFIX = "raw01";
 	private static int STARTINDEX = 0;
-	private static int STOPINDEX = 999;
-	private static long STARTDELAY = 30;
-	private static long RECOVER = 0;
+	private static int STOPINDEX = 9999;
+	private static long STARTDELAY = 1;
+	private static long RECOVER = 10;
 
 
 	public static long getFromHeaderLong( Message msg, String name ) {
@@ -56,10 +52,31 @@ public class StreamMultiSubjectOrderedConsumer {
 		return ( id==null)?_default:id;
 	}
 
+
+	public static long lastActiveCheck = 0;
+    public static void verifyActive() {
+    	long time = System.currentTimeMillis();
+    	if ( (time - lastActiveCheck ) < 1000 )
+    		return;
+
+    	lastActiveCheck = time;
+    	for ( int idx=STARTINDEX; idx<=STOPINDEX; idx++ )
+        {
+    		if (lastActiveTime[idx] != 0 && (time-lastActiveTime[idx])>3000 )
+    		{
+    			System.out.println("**** INACTIVE: " + idx + "  ************");
+    		}
+        }
+    }
+
+    volatile static long[] lastseq = new long[STOPINDEX+1];
+	volatile static long[] lastActiveTime = new long[STOPINDEX+1];;
+
 	public static class Handler implements MessageHandler {
 
-		long[] lastseq = new long[STOPINDEX+1];
+		volatile long delayedDatatime = 0;
 		volatile static int mcount = 0;
+
 		public Handler() {
 
 		}
@@ -68,25 +85,36 @@ public class StreamMultiSubjectOrderedConsumer {
 		public void onMessage(Message msg) throws InterruptedException {
 			//String msgID = StreamBackedSubscriber.getFromHeader(msg, StreamBackedSubscriber.NATSMSGID);
 			//System.out.println(msg);
-			long seq = getFromHeaderLong(msg, "seq");
+			long deviceSeq = getFromHeaderLong(msg, "seq");
 			long lid = getFromHeaderLong(msg, "id");
-			long time = getFromHeaderLong(msg, "time");
+			long msgTime = getFromHeaderLong(msg, "time");
 
 			int id = (int)lid;
-			if ( lastseq[id] != 0 && seq != lastseq[id]+1 ) {
+
+			if (lastseq[id] == 0)
+				System.out.println("First message for: " + msg.getSubject() + " - " + deviceSeq);
+
+
+			if ( lastseq[id] != 0 && deviceSeq != lastseq[id]+1 ) {
 				//System.out.println("**************************************************************************************");
-				System.out.println("**** GAP - Expected " + (lastseq[id]+1) + " got " + seq + "   ************");
+				System.out.println("**** GAP  in: " + msg.getSubject() + " - Expected " + (lastseq[id]+1) + " got " + deviceSeq + "   ************");
+				System.out.println( msg.getSubject() + " : " + deviceSeq + " : " + StreamBackedSubscriber.getID(msg) );
 				//System.out.println("**************************************************************************************");
 			}
-			lastseq[id] = seq;
-			long delay =  System.currentTimeMillis() - time;
-			if ( delay> 1000 ) {
+			lastseq[id] = deviceSeq;
+			long time = System.currentTimeMillis();
+			lastActiveTime[id] = time;
+			long delay = time - msgTime;
+			if ( delay> 1000 && (time - delayedDatatime ) > 10000 ) {
 				System.out.println("**** Delayed data " + id  + " : " + delay + "   ************");
+				delayedDatatime = time;
 			}
 
 			mcount++;
-			if (( mcount % 1000 ) == 0 )
+			if (( mcount % 1000 ) == 0 ) {
 				System.out.println(mcount);
+				verifyActive();
+			}
 
 		}
 	}
@@ -136,13 +164,12 @@ public class StreamMultiSubjectOrderedConsumer {
 		 try (Connection nc = Nats.connect(options)) {
 	            JetStream js = nc.jetStream();
 	            JetStreamManagement jsm = nc.jetStreamManagement();
+	            StreamContext streamContext = js.getStreamContext(STREAM);
 
 	            long start = System.currentTimeMillis();
 
 	            boolean running = true;
 	            int count = 0;
-
-	            Dispatcher dispatcher = nc.createDispatcher();
 
 	            MessageHandler handler = new Handler();
 
@@ -152,25 +179,16 @@ public class StreamMultiSubjectOrderedConsumer {
 	            	//Start OrderedConsumer
 	            	ZonedDateTime startTime = ZonedDateTime.now().minusSeconds(RECOVER);
 
-	            	String subject = SUBJECTPREFIX+"."+idx;
-	            	OrderedConsumerConfiguration ocConfig = new OrderedConsumerConfiguration()
-	            			.filterSubject(subject);
+	            	String rawsubject = SUBJECTPREFIX+"."+idx;
+	            	String repubsubject = "repub."+idx;
 
-            		if ( RECOVER > 0 ) {
-            			ocConfig = ocConfig.deliverPolicy(  DeliverPolicy.ByStartTime )
-            					.startTime(startTime);
-            		} else {
-            			//If there is no filter, we deliver all
-            			ocConfig = ocConfig.deliverPolicy( DeliverPolicy.New );
-            		}
+	            	Dispatcher dispatcher = nc.createDispatcher();
 
-            		StreamContext streamContext = js.getStreamContext(STREAM);
+		            StreamBackedSubscriber listener = new StreamBackedSubscriber( streamContext, dispatcher, rawsubject, repubsubject, handler);
+		            lastActiveTime[idx] = System.currentTimeMillis();
+		            //listener.setTrace(true);
 
-            		OrderedConsumerContext oc = streamContext.createOrderedConsumer( ocConfig );
-
-
-            		oc.consume(dispatcher, handler);
-            		System.out.println( "OrderedConsumer: " + subject);
+		            listener.start(startTime);
 
 	            	Thread.sleep( STARTDELAY );
 	            }

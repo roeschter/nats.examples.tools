@@ -3,7 +3,7 @@ package com.nats.examples.streamperformancepubsubmultisubject;
 import java.io.IOException;
 import java.time.ZonedDateTime;
 
-import com.nats.examples.streambackedsubscriber.StreamBackedSubscriber;
+import com.nats.examples.streambackedsubscriberv1.StreamBackedSubscriber;
 
 import io.nats.client.Connection;
 import io.nats.client.Dispatcher;

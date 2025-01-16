@@ -1,4 +1,4 @@
-package com.nats.examples.streambackedsubscriber;
+package com.nats.examples.streambackedsubscriberv2;
 
 import java.io.IOException;
 import io.nats.client.Connection;
@@ -43,7 +43,7 @@ public class StreamBackedSubscriberSampleFeeder {
 	                .storageType(StorageType.File)
 	                .subjects("ingest.devices.*")
 	                .replicas(1)
-	                .republish( new Republish("ingest.devices.*", "repub.ingest.devices.{{wildcard(1)}}", false)  )
+	                .republish( new Republish("ingest.devices.*", "repub.devices.{{wildcard(1)}}", false)  )
 	                .build();
 
 	            //Info
@@ -58,7 +58,7 @@ public class StreamBackedSubscriberSampleFeeder {
 
 	            int deviceCount = 1;
 	            int count = 1000000;
-	            long delay = 1000;  //Ticke rate per device
+	            long delay = 1000;  //Tick rate per device
 	            int nextDevice = 0;
 	            int[] deviceSequence = new int[deviceCount];
 
